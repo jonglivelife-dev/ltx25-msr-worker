@@ -24,3 +24,9 @@ RUN printf '%s\n' \
   '  latent_upscale_models: models/latent_upscale_models' \
   '  upscale_models: models/upscale_models' \
   > /comfyui/extra_model_paths.yaml
+
+# Fill the volume on first start rather than baking 72 GB into the image.
+COPY fetch-models.sh /usr/local/bin/fetch-models.sh
+RUN chmod +x /usr/local/bin/fetch-models.sh
+ENTRYPOINT ["/usr/local/bin/fetch-models.sh"]
+CMD ["/start.sh"]
