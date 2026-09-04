@@ -11,7 +11,31 @@
 # The first worker to arrive fills; the rest wait for it, then read.
 set -uo pipefail
 V=/runpod-volume
-[ -d "$V" ] || { echo "no network volume at $V — nothing to fill"; exec "$@"; }
+
+# We cannot read this worker's logs from outside, but ComfyUI's validation
+# error lists every file it can see. So the diagnosis is written AS filenames
+# into the vae directory: whatever went wrong comes back in the next job's
+# error message. Ugly, and the only channel there is.
+say () {
+  mkdir -p /comfyui/models/vae 2>/dev/null
+  : > "/comfyui/models/vae/DIAG-$1.safetensors" 2>/dev/null
+  echo "DIAG: $1"
+}
+
+echo "=== volume check ==="; df -h 2>/dev/null | head -20; ls -la / 2>/dev/null | head -20
+
+if [ ! -d "$V" ]; then
+  say "no-runpod-volume-dir"
+  for alt in /workspace /runpod /mnt/runpod-volume; do
+    [ -d "$alt" ] && say "found-$(echo "$alt" | tr -d /)"
+  done
+  echo "no network volume at $V — cannot fill"; exec "$@"
+fi
+if ! touch "$V/.writetest" 2>/dev/null; then
+  say "volume-not-writable"; echo "volume not writable"; exec "$@"
+fi
+rm -f "$V/.writetest"
+say "volume-ok-filling-now"
 
 LOCK="$V/.fetching"
 DONE="$V/.models-complete"
