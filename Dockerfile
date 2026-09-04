@@ -3,7 +3,9 @@
 # The weights are NOT baked in — 72 GB would make an unusable image and a cold
 # start measured in minutes. They live on a network volume mounted at
 # /runpod-volume, which ComfyUI is pointed at below. Only the code is here.
-FROM runpod/worker-comfyui:latest
+# Pinned: this repo publishes no :latest, and an unpinned base is a silent
+# rebuild waiting to happen. 5.10.0-base carries no bundled model.
+FROM runpod/worker-comfyui:5.10.0-base
 
 # ComfyUI-LTX2.5-MSR — multi-reference conditioning. Its pyproject declares
 # dependencies = [], so there is nothing to pip install after it.
