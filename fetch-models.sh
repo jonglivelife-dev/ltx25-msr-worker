@@ -116,15 +116,55 @@ if [ -d "$LOCK" ]; then
   fi
 fi
 
+# A lock is only evidence that a worker STARTED filling, never that one is
+# still alive. A worker killed by SIGKILL — which is how RunPod stops them —
+# never runs its EXIT trap, so the lock outlives it. That happened: a stale
+# lock sat on the volume and every worker afterwards waited two hours for a
+# completion marker nobody was going to write.
+#
+# So the lock expires. Older than LOCK_MAX_AGE and it belongs to a worker that
+# is not coming back; take it over rather than wait on a ghost.
+LOCK_MAX_AGE=$((45 * 60))
+
+steal_stale_lock () {
+  [ -d "$LOCK" ] || return 1
+  local age now mtime
+  now=$(date +%s)
+  mtime=$(stat -c %Y "$LOCK" 2>/dev/null || echo "$now")
+  age=$((now - mtime))
+  if [ "$age" -ge "$LOCK_MAX_AGE" ]; then
+    echo "lock is ${age}s old (limit ${LOCK_MAX_AGE}s) — the holder is gone, taking it"
+    phase "stale-lock-taken-${age}s"
+    rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
+    return 0
+  fi
+  echo "lock is ${age}s old, still within ${LOCK_MAX_AGE}s — a fill may be live"
+  return 1
+}
+
 if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "another worker is filling the volume — waiting"
-  for _ in $(seq 1 240); do            # up to 2 hours
-    [ -f "$DONE" ] && { echo "fill finished elsewhere"; phase "starting-comfyui"
+  if steal_stale_lock && mkdir "$LOCK" 2>/dev/null; then
+    : # took over the abandoned fill
+  else
+    echo "another worker is filling the volume — waiting"
+    phase "waiting-on-lock"
+    # Wait no longer than the lock can live. Beyond that the holder is stale by
+    # definition and the next start will take it, so waiting adds nothing.
+    for _ in $(seq 1 90); do          # 45 minutes at 30s
+      [ -f "$DONE" ] && { echo "fill finished elsewhere"; phase "starting-comfyui"
 exec "$@"; }
-    sleep 30
-  done
-  echo "gave up waiting on the other worker"; phase "starting-comfyui"
+      if steal_stale_lock && mkdir "$LOCK" 2>/dev/null; then
+        echo "took over the abandoned fill"
+        break
+      fi
+      sleep 30
+    done
+    if [ ! -d "$LOCK" ]; then
+      echo "gave up waiting on the other worker"; phase "gave-up-on-lock"
+      phase "starting-comfyui"
 exec "$@"
+    fi
+  fi
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
