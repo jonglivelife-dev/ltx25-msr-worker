@@ -96,7 +96,7 @@ phase "cache-linked"
 
 
 LOCK="$V/.fetching"
-DONE="$V/.models-verified-v2"
+DONE="$V/.models-verified-v3-ltx"
 
 if [ -f "$DONE" ]; then
   echo "models already present"; phase "starting-comfyui"
