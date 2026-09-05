@@ -29,6 +29,14 @@ RUN cd /comfyui/custom_nodes \
  && git clone --depth 1 https://github.com/liconstudio/ComfyUI-LTX2.5-MSR.git \
  && for d in */requirements.txt; do pip install --no-cache-dir -r "$d" || true; done
 
+# SageAttention is a separate pip package, not part of KJNodes. Without it
+# PathchSageAttentionKJ loads but dies at execution with "No module named
+# 'sageattention'" — which cost us a take to discover. It is a faster attention
+# kernel: it changes how attention is computed, not what the model produces.
+RUN pip install --no-cache-dir sageattention || \
+    echo "sageattention unavailable for this platform; the node will be skipped"
+
+
 # Read every model class from the volume. Written at build time so a cold start
 # never depends on a file that may or may not have been copied in.
 RUN printf '%s\n' \
