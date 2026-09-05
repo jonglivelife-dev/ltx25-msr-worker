@@ -103,6 +103,19 @@ if [ -f "$DONE" ]; then
 exec "$@"
 fi
 
+# A lock left by a killed container is indistinguishable from a live one, and
+# this has deadlocked the fill three times: the container is SIGKILLed, the
+# EXIT trap never runs, and every later worker waits two hours for a marker
+# nobody will write. So the lock expires — older than 45 minutes and we take
+# it, because no honest fill runs that long without finishing.
+if [ -d "$LOCK" ]; then
+  lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || echo 0) ))
+  if [ "$lock_age" -gt 2700 ]; then
+    echo "lock is ${lock_age}s old — stale, taking it"
+    rmdir "$LOCK" 2>/dev/null || true
+  fi
+fi
+
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "another worker is filling the volume — waiting"
   for _ in $(seq 1 240); do            # up to 2 hours
