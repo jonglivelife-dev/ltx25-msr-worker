@@ -123,6 +123,12 @@ M=https://huggingface.co/LiconStudio/LTX-2.5-Multiple-Subject-Reference/resolve/
 mkdir -p "$V"/models/{diffusion_models,text_encoders,vae,latent_upscale_models,loras/ltx2.5,vdn}
 
 EXPECTED=""
+# Lightricks/LTX-2.5 is a gated repo: anonymous requests return 401, which is
+# why the overnight fill got five FAILED lines that looked like network errors.
+# HF_TOKEN is passed through from the endpoint environment.
+AUTH=()
+[ -n "${HF_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $HF_TOKEN")
+
 fetch () {   # url  dest  expected-bytes
   local url=$1 dest=$2 want=$3 path="$V/$2"
   EXPECTED="$EXPECTED$dest:$want\n"
@@ -134,7 +140,7 @@ fetch () {   # url  dest  expected-bytes
   else
     echo "fetch  $(basename "$dest")"
   fi
-  curl -fL --retry 5 --retry-delay 5 -C - -o "$path" "$url" || echo "FAILED $dest"
+  curl -fL --retry 5 --retry-delay 5 -C - "${AUTH[@]}" -o "$path" "$url" || echo "FAILED $dest"
 }
 
 phase "fetching-models"
