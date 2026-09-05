@@ -37,8 +37,42 @@ fi
 rm -f "$V/.writetest"
 say "volume-ok-filling-now"
 
+# --- RunPod's model cache, if this endpoint has one -------------------------
+#
+# A cached repo arrives at
+#   /runpod-volume/huggingface-cache/hub/models--<org>--<name>/snapshots/<hash>/
+# on host-local disk, which is the fast tier. Our own copies sit on the network
+# volume, which is the slow one — slow enough that a worker spent fifteen
+# minutes loading and generated nothing.
+#
+# The <hash> is not knowable at build time, so extra_model_paths.yaml cannot
+# name it. Find it at startup and symlink the files into ComfyUI's own model
+# directories, which are always scanned and take precedence over the volume.
+link_cached_repo () {
+  local hub="$V/huggingface-cache/hub"
+  [ -d "$hub" ] || { echo "no model cache mounted"; return; }
+  local snap
+  for repo in "$hub"/models--*; do
+    [ -d "$repo/snapshots" ] || continue
+    snap=$(ls -1dt "$repo"/snapshots/*/ 2>/dev/null | head -1)
+    [ -n "$snap" ] || continue
+    echo "cached repo: $(basename "$repo") -> $snap"
+    for kind in diffusion_models text_encoders vae loras latent_upscale_models; do
+      [ -d "$snap/$kind" ] || continue
+      mkdir -p "/comfyui/models/$kind"
+      for f in "$snap/$kind"/*; do
+        [ -f "$f" ] || continue
+        ln -sf "$f" "/comfyui/models/$kind/$(basename "$f")"
+        echo "  linked $kind/$(basename "$f")"
+      done
+    done
+  done
+}
+link_cached_repo
+
+
 LOCK="$V/.fetching"
-DONE="$V/.models-complete"
+DONE="$V/.models-verified-v2"
 
 if [ -f "$DONE" ]; then
   echo "models already present"; exec "$@"
@@ -61,8 +95,10 @@ M=https://huggingface.co/LiconStudio/LTX-2.5-Multiple-Subject-Reference/resolve/
 
 mkdir -p "$V"/models/{diffusion_models,text_encoders,vae,latent_upscale_models,loras/ltx2.5,vdn}
 
+EXPECTED=""
 fetch () {   # url  dest  expected-bytes
   local url=$1 dest=$2 want=$3 path="$V/$2"
+  EXPECTED="$EXPECTED$dest:$want\n"
   mkdir -p "$(dirname "$path")"
   if [ -f "$path" ]; then
     local have; have=$(stat -c%s "$path" 2>/dev/null || echo 0)
@@ -108,7 +144,23 @@ fetch "$L/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safe
 fetch "$M/LTX-2.5-Licon-MSR-V1.safetensors" \
       "models/loras/ltx2.5/LTX-2.5-Licon-MSR-V1.safetensors" 1300000000
 
+echo "=== verifying ==="
+bad=0
+printf "%b" "$EXPECTED" | while IFS=: read -r dest want; do
+  [ -z "$dest" ] && continue
+  have=$(stat -c%s "$V/$dest" 2>/dev/null || echo 0)
+  if [ "$have" -lt "$want" ]; then
+    echo "SHORT  $dest  $have/$want"; echo x >> "$V/.verify-failed"
+  fi
+done
+if [ -f "$V/.verify-failed" ]; then
+  bad=$(wc -l < "$V/.verify-failed"); rm -f "$V/.verify-failed"
+fi
 du -sh "$V"/models/* 2>/dev/null
-touch "$DONE"
-echo "volume filled"
+if [ "$bad" -gt 0 ]; then
+  say "fill-incomplete-$bad-short"
+  echo "$bad file(s) short — NOT marking complete, next start will resume"
+else
+  touch "$DONE"; echo "volume filled and verified"
+fi
 exec "$@"
