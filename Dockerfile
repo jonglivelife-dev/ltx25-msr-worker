@@ -8,6 +8,12 @@
 # custom_nodes at startup and cannot load them from a mounted path.
 FROM runpod/worker-comfyui:5.10.0-base
 
+# The base image has no curl, which silently broke every startup fetch: the
+# script printed FAILED for each file and carried on, and the failure looked
+# like a network problem for a day.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # VDN-H3 — hybrid attention. Linear cost over clip length, and it keeps fast
 # motion clean where a turbo distillation goes to mush.
 # KJNodes — MiniMaxChunkFeedForward, ModelPatchTorchSettings, SageAttention,
