@@ -29,13 +29,35 @@ if [ ! -d "$V" ]; then
   for alt in /workspace /runpod /mnt/runpod-volume; do
     [ -d "$alt" ] && say "found-$(echo "$alt" | tr -d /)"
   done
-  echo "no network volume at $V — cannot fill"; exec "$@"
+  echo "no network volume at $V — cannot fill"; phase "starting-comfyui"
+exec "$@"
 fi
 if ! touch "$V/.writetest" 2>/dev/null; then
-  say "volume-not-writable"; echo "volume not writable"; exec "$@"
+  say "volume-not-writable"; echo "volume not writable"; phase "starting-comfyui"
+exec "$@"
 fi
 rm -f "$V/.writetest"
 say "volume-ok-filling-now"
+
+# --- report each startup phase somewhere we can read from outside -----------
+#
+# RunPod exposes no logs API: stdout goes to the Console and nowhere else, and
+# a worker stuck BEFORE the handler starts cannot use progress_update either,
+# because our code is not running yet. That is precisely the stage that has
+# cost us the most time to diagnose.
+#
+# So the worker writes its phase to the network volume, which we can read over
+# S3 without the console. One line per phase, with a timestamp and the worker's
+# own id, appended rather than overwritten so a crash loop is visible as a
+# repeat rather than hidden by the next attempt.
+PHASES="$V/status/$(date +%Y%m%d)-${RUNPOD_POD_ID:-unknown}.log"
+phase () {
+  mkdir -p "$(dirname "$PHASES")" 2>/dev/null
+  printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$1" >> "$PHASES" 2>/dev/null
+  echo "PHASE: $1"
+}
+
+phase "container-started"
 
 # --- RunPod's model cache, if this endpoint has one -------------------------
 #
@@ -68,23 +90,28 @@ link_cached_repo () {
     done
   done
 }
+phase "linking-cache"
 link_cached_repo
+phase "cache-linked"
 
 
 LOCK="$V/.fetching"
 DONE="$V/.models-verified-v2"
 
 if [ -f "$DONE" ]; then
-  echo "models already present"; exec "$@"
+  echo "models already present"; phase "starting-comfyui"
+exec "$@"
 fi
 
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "another worker is filling the volume — waiting"
   for _ in $(seq 1 240); do            # up to 2 hours
-    [ -f "$DONE" ] && { echo "fill finished elsewhere"; exec "$@"; }
+    [ -f "$DONE" ] && { echo "fill finished elsewhere"; phase "starting-comfyui"
+exec "$@"; }
     sleep 30
   done
-  echo "gave up waiting on the other worker"; exec "$@"
+  echo "gave up waiting on the other worker"; phase "starting-comfyui"
+exec "$@"
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
@@ -110,6 +137,7 @@ fetch () {   # url  dest  expected-bytes
   curl -fL --retry 5 --retry-delay 5 -C - -o "$path" "$url" || echo "FAILED $dest"
 }
 
+phase "fetching-models"
 echo "=== MiniMax H3 — the model under test ==="
 fetch "$C/diffusion_models/minimax_h3_ref2va_int8_convrot.safetensors" \
       "models/diffusion_models/minimax_h3_ref2va_int8_convrot.safetensors" 34000000000
@@ -161,6 +189,7 @@ if [ "$bad" -gt 0 ]; then
   say "fill-incomplete-$bad-short"
   echo "$bad file(s) short — NOT marking complete, next start will resume"
 else
-  touch "$DONE"; echo "volume filled and verified"
+  touch "$DONE"; echo "volume filled and verified"; phase "models-verified"
 fi
+phase "starting-comfyui"
 exec "$@"
